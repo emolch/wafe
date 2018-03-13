@@ -1,0 +1,64 @@
+%YAML 1.1
+
+--- !wafe.Config
+dataset_config: !wafe.DatasetConfig
+
+  # used for station coordinates
+  stations_stationxml_paths:
+  - 'data/${event_name}/response-geofon.stationxml'
+
+  # used for instrument response information
+  responses_stationxml_paths:
+  - 'data/${event_name}/response-geofon.stationxml'
+
+  events_path: 'events_hamm.pf'
+  waveform_paths:
+  - 'data/${event_name}/raw'
+
+output_path: '${config_name}.output'
+
+# travel-time tables of GF store are used for waveform cutting
+store_id: 'ruhrlayered'
+
+engine_config: !wafe.EngineConfig
+    gf_stores_from_pyrocko_config: false
+    gf_store_superdirs:
+    - 'gf_stores'
+
+measures:
+- !wafe.FeatureMeasure
+  name: 'P'
+  timing_tmin: '{stored:anyP}-0.3'
+  timing_tmax: '{stored:anyP}+0.2'
+  fmin: 4.0
+  fmax: 10.0
+  components: ['Z']
+  quantity: 'velocity'
+  method: 'spectral_average'
+- !wafe.FeatureMeasure
+  name: 'S'
+  timing_tmin: '{stored:anyS}-0.1'
+  timing_tmax: '{stored:anyS}+0.4'
+  fmin: 4.0
+  fmax: 10.0
+  components: ['Z', 'N', 'E']
+  quantity: 'velocity'
+  method: 'spectral_average'
+- !wafe.FeatureMeasure
+  name: 'Pnoise'
+  timing_tmin: '{stored:anyP}-0.8'
+  timing_tmax: '{stored:anyP}-0.3'
+  fmin: 4.0
+  fmax: 10.0
+  components: ['Z']
+  quantity: 'velocity'
+  method: 'spectral_average'
+- !wafe.FeatureMeasure
+  name: 'Snoise'
+  timing_tmin: '{stored:anyP}-0.8'
+  timing_tmax: '{stored:anyP}-0.3'
+  fmin: 4.0
+  fmax: 10.0
+  components: ['Z', 'N', 'E']
+  quantity: 'velocity'
+  method: 'spectral_average'
