@@ -16,6 +16,26 @@ guts_prefix = 'wafe'
 logger = logging.getLogger('wafe.dataset')
 
 
+g_sx_cache = {}
+
+
+def cached_load_stationxml(fn):
+    if fn not in g_sx_cache:
+        g_sx_cache[fn] = fs.load_xml(filename=fn)
+
+    return g_sx_cache[fn]
+
+
+g_events_cache = {}
+
+
+def cached_load_events(fn):
+    if fn not in g_events_cache:
+        g_events_cache[fn] = model.load_events(fn)
+
+    return g_events_cache[fn]
+
+
 class InvalidObject(Exception):
     pass
 
@@ -65,7 +85,8 @@ class Dataset(object):
 
     def __init__(self, event_name=None):
         self.events = []
-        self.pile = pile.Pile()
+        self._pile = pile.Pile()
+        self._pile_update_args = []
         self.stations = {}
         self.responses = defaultdict(list)
         self.responses_stationxml = []
@@ -112,7 +133,7 @@ class Dataset(object):
                     'Loading stations from StationXML file %s' %
                     stationxml_filename)
 
-                sx = fs.load_xml(filename=stationxml_filename)
+                sx = cached_load_stationxml(stationxml_filename)
                 for station in sx.get_pyrocko_stations():
                     self.stations[station.nsl()] = station
 
@@ -122,18 +143,32 @@ class Dataset(object):
 
         if filename is not None:
             logger.debug('Loading events from file %s' % filename)
-            self.events.extend(model.load_events(filename))
+            self.events.extend(cached_load_events(filename))
 
     def add_waveforms(self, paths, regex=None, fileformat='detect',
                       show_progress=False):
-        logger.debug('Loading waveform data from %s' % paths)
-        cachedirname = config.config().cache_dir
-        fns = util.select_files(paths, regex=regex,
-                                show_progress=show_progress)
-        cache = pile.get_cache(cachedirname)
-        self.pile.load_files(sorted(fns), cache=cache,
-                             fileformat=fileformat,
-                             show_progress=show_progress)
+
+        self._pile_update_args.append(
+            [paths, regex, fileformat, show_progress])
+
+    def _update_pile(self):
+        while self._pile_update_args:
+            paths, regex, fileformat, show_progress = \
+                self._pile_update_args.pop(0)
+
+            logger.debug('Loading waveform data from %s' % paths)
+
+            cachedirname = config.config().cache_dir
+            fns = util.select_files(paths, regex=regex,
+                                    show_progress=show_progress)
+            cache = pile.get_cache(cachedirname)
+            self._pile.load_files(sorted(fns), cache=cache,
+                                 fileformat=fileformat,
+                                 show_progress=show_progress)
+
+    def get_pile(self):
+        self._update_pile()
+        return self._pile
 
     def add_responses(self, sacpz_dirname=None, stationxml_filenames=None):
         if sacpz_dirname:
@@ -148,7 +183,7 @@ class Dataset(object):
                     stationxml_filename)
 
                 self.responses_stationxml.append(
-                    fs.load_xml(filename=stationxml_filename))
+                    cached_load_stationxml(stationxml_filename))
 
     def add_clippings(self, markers_filename):
         markers = pmarker.load_markers(markers_filename)
@@ -404,7 +439,8 @@ class Dataset(object):
                 raise NotFound(
                     'waveform clipped', (net, sta, loc, cha))
 
-        trs = self.pile.all(
+        p = self.get_pile()
+        trs = p.all(
             tmin=tmin+toffset_noise_extract,
             tmax=tmax+toffset_noise_extract,
             tpad=tpad,
@@ -474,7 +510,8 @@ class Dataset(object):
             station = copy.deepcopy(station)
 
             nsl = station.nsl()
-            trs = self.pile.all(
+            p = self.get_pile()
+            trs = p.all(
                 tmin=tmin, tmax=tmax,
                 trace_selector=lambda tr: tr.nslc_id[:3] == nsl,
                 load_data=False)
@@ -744,7 +781,7 @@ class DatasetConfig(HasPaths):
 
         events = []
         for fn in glob.glob(fp(self.events_path)):
-            events.extend(model.load_events(filename=fn))
+            events.extend(cached_load_events(fn))
 
         event_names = [ev.name for ev in events]
         return event_names

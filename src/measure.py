@@ -31,6 +31,16 @@ response_wa = trace.PoleZeroResponse(
     zeros=[0., 0.])
 
 
+class NamedResponse(StringChoice):
+    choices = [
+        'wood-anderson',
+        'wwssn-lp']
+
+    map = {
+        'wood-anderson': response_wa,
+        'wwssn-lp': response_wwssn_lp}
+
+
 class BruneResponse(trace.FrequencyResponse):
 
     duration = Float.T()
@@ -72,6 +82,7 @@ class FeatureMeasure(Object):
     fmin = Float.T(optional=True)
     fmax = Float.T(optional=True)
     response = trace.FrequencyResponse.T(optional=True)
+    named_response = NamedResponse.T(optional=True)
     components = List.T(Components.T())
     quantity = Quantity.T(default='displacement')
     method = FeatureMethod.T(default='peak_component')
@@ -89,17 +100,25 @@ class FeatureMeasure(Object):
             tmin = source.time + store.t(self.timing_tmin, source, target)
             tmax = source.time + store.t(self.timing_tmax, source, target)
 
+            if self.fmin is not None and self.fmax is not None:
+                freqlimits = [
+                    self.fmin/2.,
+                    self.fmin,
+                    self.fmax,
+                    self.fmax*2.]
+                tfade = 1./self.fmin
+
+            else:
+                freqlimits = None
+                tfade = 0.0
+
             tr = ds.get_waveform(
                 target.codes,
                 quantity=self.quantity,
                 tmin=tmin,
                 tmax=tmax,
-                freqlimits=[
-                    self.fmin/2.,
-                    self.fmin,
-                    self.fmax,
-                    self.fmax*2.],
-                tfade=1./self.fmin)
+                freqlimits=freqlimits,
+                tfade=tfade)
 
             trs_orig.append(tr)
 
@@ -120,6 +139,10 @@ class FeatureMeasure(Object):
 
             if self.response:
                 responses.append(self.response)
+
+            if self.named_response:
+                responses.append(
+                    NamedResponse.map[self.named_response])
 
             if responses:
                 trans = trace.MultiplyResponse(responses)

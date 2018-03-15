@@ -28,7 +28,7 @@ def run_extract(config, debug=False):
 
     with open(output_measures_path, 'w') as out:
 
-        out.write('# event station %s' % ' '.join(
+        out.write('# event station %s\n' % ' '.join(
             measure.name for measure in config.measures))
 
         event_names = config.get_event_names()
