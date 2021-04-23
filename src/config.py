@@ -3,17 +3,18 @@ from pyrocko import gf
 from pyrocko.guts import Bool, List, load, dump
 
 from wafe import dataset, meta, measure
+from pyrocko.has_paths import Path, HasPaths
 
 guts_prefix = 'wafe'
 
 
-class EngineConfig(meta.HasPaths):
+class EngineConfig(HasPaths):
     gf_stores_from_pyrocko_config = Bool.T(default=True)
-    gf_store_superdirs = List.T(meta.Path.T())
-    gf_store_dirs = List.T(meta.Path.T())
+    gf_store_superdirs = List.T(Path.T())
+    gf_store_dirs = List.T(Path.T())
 
     def __init__(self, *args, **kwargs):
-        meta.HasPaths.__init__(self, *args, **kwargs)
+        HasPaths.__init__(self, *args, **kwargs)
         self._engine = None
 
     def get_engine(self):
@@ -27,15 +28,15 @@ class EngineConfig(meta.HasPaths):
         return self._engine
 
 
-class Config(meta.HasPaths):
+class Config(HasPaths):
     dataset_config = dataset.DatasetConfig.T()
     measures = List.T(measure.FeatureMeasure.T())
     store_id = gf.StringID.T()
     engine_config = EngineConfig.T()
-    output_path = meta.Path.T()
+    output_path = Path.T()
 
     def __init__(self, *args, **kwargs):
-        meta.HasPaths.__init__(self, *args, **kwargs)
+        HasPaths.__init__(self, *args, **kwargs)
         self._config_name = 'untitled'
 
     def set_config_name(self, config_name):
@@ -46,13 +47,13 @@ class Config(meta.HasPaths):
             return meta.expand_template(path, dict(
                 config_name=self._config_name))
 
-        return meta.HasPaths.expand_path(self, path, extra=extra)
+        return HasPaths.expand_path(self, path, extra=extra)
 
     def get_event_names(self):
         return self.dataset_config.get_event_names()
 
-    def get_dataset(self, event_name):
-        return self.dataset_config.get_dataset(event_name)
+    def get_dataset(self):
+        return self.dataset_config.get_dataset()
 
     def get_engine(self):
         return self.engine_config.get_engine()

@@ -1,39 +1,18 @@
-import glob
 import copy
 import logging
 import numpy as num
 
-from collections import defaultdict
-from pyrocko import util, pile, model, config, trace, \
+from pyrocko import util, model, trace, \
     marker as pmarker
-from pyrocko.fdsn import enhanced_sacpz, station as fs
+from pyrocko.fdsn import station as fs
 from pyrocko.guts import (Object, Tuple, String, Float, List, Bool, dump_all,
                           load_all)
 
-from .meta import Path, HasPaths, expand_template
+from pyrocko import squirrel
+from pyrocko.has_paths import HasPaths, Path
 
 guts_prefix = 'wafe'
 logger = logging.getLogger('wafe.dataset')
-
-
-g_sx_cache = {}
-
-
-def cached_load_stationxml(fn):
-    if fn not in g_sx_cache:
-        g_sx_cache[fn] = fs.load_xml(filename=fn)
-
-    return g_sx_cache[fn]
-
-
-g_events_cache = {}
-
-
-def cached_load_events(fn):
-    if fn not in g_events_cache:
-        g_events_cache[fn] = model.load_events(fn)
-
-    return g_events_cache[fn]
 
 
 class InvalidObject(Exception):
@@ -42,7 +21,7 @@ class InvalidObject(Exception):
 
 class NotFound(Exception):
     def __init__(self, reason, codes=None, time_range=None):
-        self.reason = reason
+        self.reason = str(reason)
         self.time_range = time_range
         self.codes = codes
 
@@ -83,13 +62,8 @@ def dump_station_corrections(station_corrections, filename):
 
 class Dataset(object):
 
-    def __init__(self, event_name=None):
-        self.events = []
-        self._pile = pile.Pile()
-        self._pile_update_args = []
-        self.stations = {}
-        self.responses = defaultdict(list)
-        self.responses_stationxml = []
+    def __init__(self, sq):
+        self._squirrel = sq
         self.clippings = {}
         self.blacklist = set()
         self.whitelist_nslc = None
@@ -103,87 +77,12 @@ class Dataset(object):
         self.clip_handling = 'by_nsl'
         self._picks = None
         self._cache = {}
-        self._event_name = event_name
+
+    def get_squirrel(self):
+        return self._squirrel
 
     def empty_cache(self):
         self._cache = {}
-
-    def add_stations(
-            self,
-            stations=None,
-            pyrocko_stations_filename=None,
-            stationxml_filenames=None):
-
-        if stations is not None:
-            for station in stations:
-                self.stations[station.nsl()] = station
-
-        if pyrocko_stations_filename is not None:
-            logger.debug(
-                'Loading stations from file %s' %
-                pyrocko_stations_filename)
-
-            for station in model.load_stations(pyrocko_stations_filename):
-                self.stations[station.nsl()] = station
-
-        if stationxml_filenames is not None and len(stationxml_filenames) > 0:
-
-            for stationxml_filename in stationxml_filenames:
-                logger.debug(
-                    'Loading stations from StationXML file %s' %
-                    stationxml_filename)
-
-                sx = cached_load_stationxml(stationxml_filename)
-                for station in sx.get_pyrocko_stations():
-                    self.stations[station.nsl()] = station
-
-    def add_events(self, events=None, filename=None):
-        if events is not None:
-            self.events.extend(events)
-
-        if filename is not None:
-            logger.debug('Loading events from file %s' % filename)
-            self.events.extend(cached_load_events(filename))
-
-    def add_waveforms(self, paths, regex=None, fileformat='detect',
-                      show_progress=False):
-
-        self._pile_update_args.append(
-            [paths, regex, fileformat, show_progress])
-
-    def _update_pile(self):
-        while self._pile_update_args:
-            paths, regex, fileformat, show_progress = \
-                self._pile_update_args.pop(0)
-
-            logger.debug('Loading waveform data from %s' % paths)
-
-            cachedirname = config.config().cache_dir
-            fns = util.select_files(paths, regex=regex,
-                                    show_progress=show_progress)
-            cache = pile.get_cache(cachedirname)
-            self._pile.load_files(sorted(fns), cache=cache,
-                                 fileformat=fileformat,
-                                 show_progress=show_progress)
-
-    def get_pile(self):
-        self._update_pile()
-        return self._pile
-
-    def add_responses(self, sacpz_dirname=None, stationxml_filenames=None):
-        if sacpz_dirname:
-            logger.debug('Loading SAC PZ responses from %s' % sacpz_dirname)
-            for x in enhanced_sacpz.iload_dirname(sacpz_dirname):
-                self.responses[x.codes].append(x)
-
-        if stationxml_filenames:
-            for stationxml_filename in stationxml_filenames:
-                logger.debug(
-                    'Loading StationXML responses from %s' %
-                    stationxml_filename)
-
-                self.responses_stationxml.append(
-                    cached_load_stationxml(stationxml_filename))
 
     def add_clippings(self, markers_filename):
         markers = pmarker.load_markers(markers_filename)
@@ -295,6 +194,8 @@ class Dataset(object):
             net, sta, loc, _ = obj.nslc_id
         elif isinstance(obj, model.Station):
             net, sta, loc = obj.nsl()
+        elif isinstance(obj, squirrel.Station):
+            net, sta, loc = obj.network, obj.station, '*'
         elif isinstance(obj, tuple) and len(obj) in (3, 4):
             net, sta, loc = obj[:3]
         else:
@@ -331,20 +232,25 @@ class Dataset(object):
             return obj
 
         net, sta, loc = self.get_nsl(obj)
+        keys = net, sta, loc
 
-        keys = [(net, sta, loc), (net, sta, ''), ('', sta, '')]
-        for k in keys:
-            if k in self.stations:
-                return self.stations[k]
+        stations = [
+            s for s in self._squirrel.get_stations(codes=keys, model='pyrocko')
+            if s.location != '*']
 
-        raise NotFound('no station information', keys)
+        if len(stations) == 1:
+            return stations[0]
+        elif len(stations) > 1:
+            raise NotFound('multiple matching stations', keys)
+        else:
+            raise NotFound('no station information', keys)
 
     def get_stations(self):
         return [self.stations[k] for k in sorted(self.stations)
                 if not self.is_blacklisted(self.stations[k])
                 and self.is_whitelisted(self.stations[k])]
 
-    def get_response(self, obj, quantity='displacement'):
+    def old_get_response(self, obj, quantity='displacement'):
         if (self.responses is None or len(self.responses) == 0) \
                 and (self.responses_stationxml is None
                      or len(self.responses_stationxml) == 0):
@@ -439,12 +345,10 @@ class Dataset(object):
                 raise NotFound(
                     'waveform clipped', (net, sta, loc, cha))
 
-        p = self.get_pile()
-        trs = p.all(
-            tmin=tmin+toffset_noise_extract,
-            tmax=tmax+toffset_noise_extract,
-            tpad=tpad,
-            trace_selector=lambda tr: tr.nslc_id == (net, sta, loc, cha),
+        trs = self._squirrel.get_waveforms(
+            tmin=tmin+toffset_noise_extract-tpad,
+            tmax=tmax+toffset_noise_extract+tpad,
+            codes=(net, sta, loc, cha),
             want_incomplete=want_incomplete or extend_incomplete)
 
         if toffset_noise_extract != 0.0:
@@ -493,7 +397,9 @@ class Dataset(object):
                 tr.downsample_to(deltat, snap=True, allow_upsample_max=5)
                 tr.deltat = deltat
 
-            resp = self.get_response(tr, quantity=quantity)
+            resp = self._squirrel.get_response(tr).get_effective(
+                input_quantity=quantity)
+
             trs_restituted.append(
                 tr.transfer(
                     tfade=tfade, freqlimits=freqlimits,
@@ -553,10 +459,9 @@ class Dataset(object):
         if cache is True:
             cache = self._cache
 
-        _, _, _, channel = self.get_nslc(obj)
-        station = self.get_station(self.get_nsl(obj))
-
-        nslc = station.nsl() + (channel,)
+        nslc = self.get_nslc(obj)
+        station = self.get_station(nslc)
+        cha_target = nslc[3]
 
         if self.is_blacklisted(nslc):
             raise NotFound(
@@ -581,7 +486,7 @@ class Dataset(object):
 
         abs_delays = []
         for ocha in 'ENZRT':
-            sc = self.station_corrections.get(station.nsl() + (channel,), None)
+            sc = self.station_corrections.get(nslc, None)
             if sc:
                 abs_delays.append(abs(sc.delay))
 
@@ -603,11 +508,11 @@ class Dataset(object):
 
                 trs_restituted_group = []
                 trs_raw_group = []
-                if channel in deps:
-                    for cha in deps[channel]:
+                if cha_target in deps:
+                    for cha in deps[cha_target]:
                         trs_restituted_this, trs_raw_this = \
                             self.get_waveform_restituted(
-                                station.nsl() + (cha,),
+                                nslc[:3] + (cha,),
                                 quantity=quantity,
                                 tmin=tmin, tmax=tmax, tpad=tpad+abs_delay_max,
                                 toffset_noise_extract=0.0,
@@ -648,11 +553,11 @@ class Dataset(object):
                 return trs_projected, trs_restituted, trs_raw
 
             for tr in trs_projected:
-                if tr.channel == channel:
+                if tr.channel == cha_target:
                     return tr
 
             raise NotFound(
-                'waveform not available', station.nsl() + (channel,))
+                'waveform not available', station.nsl() + (cha_target,))
 
         except NotFound as e:
             if cache is not None:
@@ -681,16 +586,6 @@ class Dataset(object):
                 (t, magmin))
 
         return ev_x
-
-    def get_event(self):
-        if self._event_name is None:
-            raise NotFound('no main event selected in dataset')
-
-        for ev in self.events:
-            if ev.name == self._event_name:
-                return ev
-
-        raise NotFound('no such event: %s' % self._event_name)
 
     def get_picks(self):
         if self._picks is None:
@@ -739,19 +634,20 @@ class Dataset(object):
 
 class DatasetConfig(HasPaths):
 
-    stations_path = Path.T(optional=True)
-    stations_stationxml_paths = List.T(Path.T(), optional=True)
-    events_path = Path.T(optional=True)
-    waveform_paths = List.T(Path.T(), optional=True)
-    clippings_path = Path.T(optional=True)
-    responses_sacpz_path = Path.T(optional=True)
-    responses_stationxml_paths = List.T(Path.T(), optional=True)
-    station_corrections_path = Path.T(optional=True)
-    apply_correction_factors = Bool.T(optional=True,
-                                      default=True)
-    apply_correction_delays = Bool.T(optional=True,
-                                     default=True)
-    extend_incomplete = Bool.T(default=False)
+    squirrel_dataset_path = Path.T()
+
+    clippings_path = Path.T(
+        optional=True)
+    station_corrections_path = Path.T(
+        optional=True)
+    apply_correction_factors = Bool.T(
+        optional=True,
+        default=True)
+    apply_correction_delays = Bool.T(
+        optional=True,
+        default=True)
+    extend_incomplete = Bool.T(
+        default=False)
     picks_paths = List.T(Path.T())
     blacklist_paths = List.T(Path.T())
     blacklist = List.T(
@@ -769,52 +665,21 @@ class DatasetConfig(HasPaths):
 
     def __init__(self, *args, **kwargs):
         HasPaths.__init__(self, *args, **kwargs)
-        self._ds = {}
+        self._ds = None
 
-    def get_event_names(self):
-        def extra(path):
-            return expand_template(path, dict(
-                event_name='*'))
+    def get_dataset(self, check=True, update=False):
 
-        def fp(path):
-            return self.expand_path(path, extra=extra)
+        if self._ds is None:
 
-        events = []
-        for fn in glob.glob(fp(self.events_path)):
-            events.extend(cached_load_events(fn))
+            fp = self.expand_path
 
-        event_names = [ev.name for ev in events]
-        return event_names
+            sq = squirrel.from_dataset(
+                fp(self.squirrel_dataset_path), check=check, update=update)
 
-    def get_dataset(self, event_name):
-        if event_name not in self._ds:
-            def extra(path):
-                return expand_template(path, dict(
-                    event_name=event_name))
-
-            def fp(path):
-                return self.expand_path(path, extra=extra)
-
-            ds = Dataset(event_name)
-            ds.add_stations(
-                pyrocko_stations_filename=fp(self.stations_path),
-                stationxml_filenames=fp(self.stations_stationxml_paths))
-
-            ds.add_events(filename=fp(self.events_path))
-
-            if self.waveform_paths:
-                ds.add_waveforms(paths=fp(self.waveform_paths))
+            ds = Dataset(sq)
 
             if self.clippings_path:
                 ds.add_clippings(markers_filename=fp(self.clippings_path))
-
-            if self.responses_sacpz_path:
-                ds.add_responses(
-                    sacpz_dirname=fp(self.responses_sacpz_path))
-
-            if self.responses_stationxml_paths:
-                ds.add_responses(
-                    stationxml_filenames=fp(self.responses_stationxml_paths))
 
             if self.station_corrections_path:
                 ds.add_station_corrections(
@@ -835,9 +700,9 @@ class DatasetConfig(HasPaths):
             if self.whitelist_paths:
                 ds.add_whitelist(filenames=fp(self.whitelist_paths))
 
-            self._ds[event_name] = ds
+            self._ds = ds
 
-        return self._ds[event_name]
+        return self._ds
 
 
 __all__ = '''
